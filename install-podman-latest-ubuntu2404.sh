@@ -34,7 +34,12 @@ set -o pipefail  # Exit on pipe failure
 # Configuration
 #-------------------------------------------------------------------------------
 
-readonly GO_VERSION="${GO_VERSION:-1.23.5}"
+# Go 1.25.6 is the latest stable release as of February 1, 2026
+# Released: 2026-01-15
+# Includes security fixes to go command, archive/zip, crypto/tls, net/url
+# See: https://go.dev/doc/devel/release
+readonly GO_VERSION="${GO_VERSION:-1.25.6}"
+
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly BUILD_DIR="${BUILD_DIR:-${SCRIPT_DIR}/podman-build}"
 readonly LOG_FILE="${BUILD_DIR}/install.log"
@@ -142,13 +147,13 @@ Options:
     --help            Show this help message
 
 Environment Variables:
-    GO_VERSION        Go version to install (default: 1.23.5)
+    GO_VERSION        Go version to install (default: 1.25.6)
     BUILD_DIR         Directory for build files (default: ./podman-build)
 
 Examples:
     $(basename "$0")
     $(basename "$0") --force
-    GO_VERSION=1.23.6 $(basename "$0")
+    GO_VERSION=1.25.7 $(basename "$0")
 
 EOF
     exit 0
@@ -348,6 +353,7 @@ create_build_directory() {
     echo "=== Podman Installation Log ===" > "$LOG_FILE"
     echo "Started: $(date)" >> "$LOG_FILE"
     echo "Build directory: $BUILD_DIR" >> "$LOG_FILE"
+    echo "Go version: $GO_VERSION" >> "$LOG_FILE"
     echo "" >> "$LOG_FILE"
     
     log_success "Build directory: $BUILD_DIR"
@@ -605,6 +611,7 @@ ${GREEN}========================================================================
 ===============================================================================${NC}
 
 Podman $(podman --version | awk '{print $3}') has been successfully installed.
+Built with Go ${GO_VERSION}
 
 ${YELLOW}Next Steps:${NC}
 
@@ -648,6 +655,7 @@ main() {
     echo -e "${GREEN}========================================${NC}"
     echo -e "${GREEN}  Podman from Source Installer${NC}"
     echo -e "${GREEN}  Ubuntu 24.04 LTS${NC}"
+    echo -e "${GREEN}  Go ${GO_VERSION}${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
     
