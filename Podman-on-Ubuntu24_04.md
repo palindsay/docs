@@ -1,130 +1,163 @@
 # Building and Installing Latest Podman on Ubuntu 24.04 LTS
 
-This guide documents a clean, from-source installation of Podman 5.x/6.x on Ubuntu 24.04 LTS (Noble Numbat). Ubuntu 24.04 ships with Podman 4.9.3 and outdated dependencies that are incompatible with modern Podman releases.
+This guide documents a complete, from-source installation of Podman 5.x/6.x on Ubuntu 24.04 LTS (Noble Numbat). Ubuntu 24.04 ships with Podman 4.9.3 and outdated dependencies incompatible with modern Podman releases.
+
+## Quick Start (Automated)
+
+```bash
+chmod +x install-podman-latest.sh
+./install-podman-latest.sh
+```
+
+For manual installation, follow the detailed steps below.
+
+---
+
+## Table of Contents
+
+1. [Why Build from Source?](#why-build-from-source)
+2. [Prerequisites](#prerequisites)
+3. [Step 1: Remove Conflicting Packages](#step-1-remove-conflicting-packages)
+4. [Step 2: Install Dependencies](#step-2-install-dependencies)
+5. [Step 3: Install Modern Go](#step-3-install-modern-go)
+6. [Step 4: Build conmon](#step-4-build-conmon)
+7. [Step 5: Build crun](#step-5-build-crun)
+8. [Step 6: Build Podman](#step-6-build-podman)
+9. [Step 7: Configure Podman](#step-7-configure-podman)
+10. [Step 8: Validate Installation](#step-8-validate-installation)
+11. [Troubleshooting](#troubleshooting)
+12. [Uninstallation](#uninstallation)
+
+---
+
+## Why Build from Source?
+
+Ubuntu 24.04's package versions are too old for Podman 5.x+:
+
+| Component | Ubuntu 24.04 APT | Required | This Guide |
+|-----------|------------------|----------|------------|
+| Go | 1.22.x | 1.23.x+ | **1.25.6** |
+| Podman | 4.9.3 | 5.x/6.x | **latest** |
+| crun | 1.14.x | latest | **latest** |
+| conmon | varies | latest | **latest** |
+| netavark | 1.4.0 | 1.4.0+ | **1.4.0 (apt)** |
+| aardvark-dns | 1.4.0 | 1.4.0+ | **1.4.0 (apt)** |
+
+**Built from source:** Go, conmon, crun, Podman
+
+**Kept from apt (work fine):** netavark, aardvark-dns, passt, containernetworking-plugins
+
+---
 
 ## Prerequisites
 
 - Ubuntu 24.04 LTS (server or desktop)
 - sudo privileges
-- ~2GB free disk space for builds
+- ~2GB free disk space
 - Internet connectivity
-
-## Overview
-
-Ubuntu 24.04's package versions are too old for Podman 5.x+:
-- **Go**: Ubuntu ships 1.22.x; Podman requires 1.23.x+
-- **crun**: Ubuntu ships 1.14.x; Podman 5.x+ requires newer versions
-- **conmon**: Should be built from source for compatibility
-
-We'll build these components from source in order:
-1. Go (install from official tarball)
-2. conmon (container monitor)
-3. crun (OCI runtime)
-4. Podman
 
 ---
 
-## Step 1: Remove Conflicting APT Packages
+## Step 1: Remove Conflicting Packages
 
-Remove any existing container tooling to avoid version conflicts:
+Remove only packages we're building from source. Keep runtime dependencies.
 
 ```bash
 sudo apt remove -y podman crun conmon buildah skopeo containers-common
 sudo apt autoremove -y
 ```
 
-Verify removal:
+Verify:
 
 ```bash
-which podman crun conmon  # Should return nothing or "not found"
+which podman crun conmon  # Should return nothing
 ```
 
 ---
 
-## Step 2: Install Build Dependencies
+## Step 2: Install Dependencies
 
-### Core build tools
+### Build tools
 
 ```bash
 sudo apt update
 sudo apt install -y \
-    make \
-    gcc \
-    pkg-config \
-    git \
-    curl \
-    wget
+    make gcc pkg-config git curl wget
 ```
 
 ### Podman build dependencies
 
 ```bash
 sudo apt install -y \
-    btrfs-progs \
-    libbtrfs-dev \
-    libseccomp-dev \
-    libassuan-dev \
-    libgpgme-dev \
-    libdevmapper-dev \
-    libglib2.0-dev \
-    libostree-dev \
-    libprotobuf-dev \
-    libprotobuf-c-dev \
-    libsystemd-dev \
-    uidmap \
-    go-md2man
+    btrfs-progs libbtrfs-dev libseccomp-dev libassuan-dev \
+    libgpgme-dev libdevmapper-dev libglib2.0-dev libostree-dev \
+    libprotobuf-dev libprotobuf-c-dev libsystemd-dev uidmap go-md2man
 ```
 
 ### crun build dependencies
 
 ```bash
 sudo apt install -y \
-    autoconf \
-    automake \
-    libtool \
-    libcap-dev \
-    libyajl-dev \
-    python3
+    autoconf automake libtool libcap-dev libyajl-dev python3
 ```
 
-### Runtime dependencies
+### Runtime dependencies (CRITICAL)
+
+These are **essential** for Podman networking. Missing these causes:
+- `Error: could not find "netavark"`
+- Container networking failures
 
 ```bash
 sudo apt install -y \
+    netavark \
+    aardvark-dns \
+    containernetworking-plugins \
     passt \
-    fuse-overlayfs \
     slirp4netns \
-    iptables
+    fuse-overlayfs \
+    iptables \
+    libsubid4
+```
+
+### Verify critical components
+
+```bash
+# netavark (network backend)
+ls -la /usr/lib/podman/netavark
+
+# aardvark-dns (container DNS)
+ls -la /usr/lib/podman/aardvark-dns
+
+# pasta (rootless networking)
+which pasta
 ```
 
 ---
 
 ## Step 3: Install Modern Go
 
-Ubuntu 24.04's Go is too old. Install Go 1.25.6 (latest stable as of February 2026) from the official tarball.
-
-**Go 1.25.6** was released on January 15, 2026 and includes security fixes to the go command, archive/zip, crypto/tls, and net/url packages.
+Go **1.25.6** (released January 15, 2026) is the latest stable version.
 
 ```bash
-GO_VERSION="1.25.6"  # Latest stable as of Feb 1, 2026
+GO_VERSION="1.25.6"
 
 # Download
 cd /tmp
 wget "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
 
-# Remove any existing Go installation
+# Install
 sudo rm -rf /usr/local/go
-
-# Extract to /usr/local
 sudo tar -C /usr/local -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
-
-# Cleanup
 rm "go${GO_VERSION}.linux-amd64.tar.gz"
+
+# System-wide symlinks (for sudo access)
+sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
+sudo ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 ```
 
-### Configure Go environment
+### Add to shell profile
 
-Add to your shell profile (`~/.bashrc` or `~/.zshrc`):
+Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 cat >> ~/.bashrc << 'EOF'
@@ -135,18 +168,10 @@ export GOPATH=$HOME/go
 export PATH=$GOPATH/bin:$PATH
 EOF
 
-# Load immediately
 source ~/.bashrc
 ```
 
-### Create system-wide symlinks (for sudo access)
-
-```bash
-sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
-sudo ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
-```
-
-### Verify Go installation
+### Verify
 
 ```bash
 go version  # Should show go1.25.6
@@ -154,30 +179,17 @@ go version  # Should show go1.25.6
 
 ---
 
-## Step 4: Create Build Directory
+## Step 4: Build conmon
+
+conmon (container monitor) handles container logging and lifecycle.
 
 ```bash
-mkdir -p ~/prjs/containers
-cd ~/prjs/containers
-```
+mkdir -p ~/prjs/containers && cd ~/prjs/containers
 
----
-
-## Step 5: Build and Install conmon
-
-conmon (container monitor) monitors OCI containers and handles logging.
-
-```bash
-cd ~/prjs/containers
-
-# Clone repository
-git clone https://github.com/containers/conmon.git
+git clone --depth 1 https://github.com/containers/conmon.git
 cd conmon
 
-# Build
 make
-
-# Install
 sudo make install
 
 # Verify
@@ -186,232 +198,277 @@ conmon --version
 
 ---
 
-## Step 6: Build and Install crun
+## Step 5: Build crun
 
-crun is the OCI runtime that spawns and runs containers.
+crun is the OCI runtime (faster than runc).
 
 ```bash
 cd ~/prjs/containers
 
-# Clone repository
-git clone https://github.com/containers/crun.git
+git clone --depth 1 https://github.com/containers/crun.git
 cd crun
 
-# Generate build system
 ./autogen.sh
-
-# Configure with /usr prefix to match system paths
 ./configure --prefix=/usr
-
-# Build
 make
-
-# Install
 sudo make install
 
 # Verify
 crun --version
 ```
 
-Expected output:
-```
-crun version 1.x.x
-...
-```
-
 ---
 
-## Step 7: Build and Install Podman
+## Step 6: Build Podman
 
 ```bash
 cd ~/prjs/containers
 
-# Clone repository
-git clone https://github.com/containers/podman.git
+git clone --depth 1 https://github.com/containers/podman.git
 cd podman
 
-# Checkout latest stable release (optional - main branch is usually fine)
-# git checkout v5.4.0
-
-# Build with recommended features
 make BUILDTAGS="selinux seccomp systemd"
-```
 
-### Install Podman
-
-Use `env` to preserve PATH for sudo:
-
-```bash
+# Use env to preserve PATH for Go during install
 sudo env "PATH=$PATH" make install PREFIX=/usr
-```
 
-### Verify installation
-
-```bash
+# Verify
 podman --version
 ```
 
 ---
 
-## Step 8: Configure Podman
+## Step 7: Configure Podman
 
-### Create configuration directories
+### Create directories
 
 ```bash
 sudo mkdir -p /etc/containers
 mkdir -p ~/.config/containers
 ```
 
-### Download container registries configuration
+### Download system configs
 
 ```bash
+# Registries
 sudo curl -L -o /etc/containers/registries.conf \
     https://raw.githubusercontent.com/containers/image/main/registries.conf
-```
 
-### Download image signature policy
-
-```bash
+# Image policy
 sudo curl -L -o /etc/containers/policy.json \
     https://raw.githubusercontent.com/containers/image/main/default-policy.json
 ```
 
-### (Optional) User-level configuration
+### Create user configuration
 
-Create user config for rootless preferences:
+**IMPORTANT:** Always create this file fresh (don't append) to avoid duplicate section errors.
 
 ```bash
 cat > ~/.config/containers/containers.conf << 'EOF'
+# Podman user configuration
+
 [containers]
-# Set default timezone in containers
 tz = "local"
+default_ulimits = ["nofile=65536:65536"]
 
 [engine]
-# Use crun as runtime (faster than runc)
 runtime = "crun"
+helper_binaries_dir = [
+  "/usr/lib/podman",
+  "/usr/libexec/podman",
+  "/usr/local/lib/podman",
+  "/usr/local/libexec/podman"
+]
+database_backend = "sqlite"
+events_logger = "journald"
 
 [network]
-# Use pasta for rootless networking (default in Podman 5.x)
+network_backend = "netavark"
 default_rootless_network_cmd = "pasta"
+firewall_driver = "iptables"
 EOF
 ```
 
----
-
-## Step 9: Enable Rootless Support
-
-Ensure subuid/subgid mappings exist for your user:
+### Enable rootless containers
 
 ```bash
-# Check if mappings exist
+# Check existing mappings
 grep $USER /etc/subuid /etc/subgid
 
-# If not present, add them (100000 subordinate UIDs/GIDs starting at 100000)
+# Add if missing
 sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER
 ```
 
----
-
-## Step 10: Enable Systemd Services (Optional)
-
-For auto-update and socket activation:
+### Reload systemd
 
 ```bash
-# System-wide services
 sudo systemctl daemon-reload
-sudo systemctl enable --now podman.socket
-
-# User services (rootless)
 systemctl --user daemon-reload
-systemctl --user enable --now podman.socket
 ```
 
 ---
 
-## Step 11: Verification
+## Step 8: Validate Installation
 
-### Check versions
+### Check component versions
 
 ```bash
-echo "=== Versions ==="
+echo "=== Component Versions ==="
 go version
 crun --version | head -1
 conmon --version
 podman --version
+/usr/lib/podman/netavark --version
+/usr/lib/podman/aardvark-dns --version
+pasta --version
 ```
 
-### Check Podman info
+### Verify configuration
 
 ```bash
 podman info
 ```
 
-### Test rootless container
+Expected output should include:
+- `networkBackend: netavark`
+- `ociRuntime: name: crun`
+- `rootless: true`
+
+### Test container execution
 
 ```bash
-podman run --rm docker.io/library/alpine echo "Hello from Podman $(podman --version)"
+# Basic test
+podman run --rm docker.io/library/alpine echo "Hello from Podman!"
+
+# Network test
+podman run --rm alpine ping -c 1 8.8.8.8
+
+# DNS test
+podman run --rm alpine nslookup google.com
 ```
 
-### Test with systemd integration
+### Test container-to-container networking
 
 ```bash
-podman run -d --name test-nginx -p 8080:80 docker.io/library/nginx:alpine
-curl -s http://localhost:8080 | head -5
-podman stop test-nginx
-podman rm test-nginx
+# Create a pod
+podman pod create --name testpod
+
+# Run a web server
+podman run -d --pod testpod --name web alpine \
+    sh -c "echo 'Hello' > /tmp/index.html && httpd -f -p 8080 -h /tmp"
+
+# Test from another container
+podman run --rm --pod testpod alpine wget -qO- http://localhost:8080
+
+# Cleanup
+podman pod rm -f testpod
 ```
 
 ---
 
 ## Troubleshooting
 
-### "pasta" not found
+### Error: could not find "netavark"
+
+**Cause:** Network backend binaries not installed or not in helper_binaries_dir.
+
+**Fix:**
 
 ```bash
-sudo apt install -y passt
+# Install from apt
+sudo apt install -y netavark aardvark-dns containernetworking-plugins
+
+# Verify location
+ls -la /usr/lib/podman/
+
+# Ensure config has correct paths
+cat ~/.config/containers/containers.conf | grep helper_binaries_dir
 ```
 
-### "crun: unknown version specified"
+### Error: Key 'engine' has already been defined
 
-Your crun is too old. Rebuild from source per Step 6.
+**Cause:** Duplicate sections in containers.conf from appending instead of overwriting.
 
-### Permission denied errors in rootless mode
+**Fix:**
 
 ```bash
-# Ensure subuid/subgid are configured
-grep $USER /etc/subuid /etc/subgid
+# Remove and recreate the config file
+rm ~/.config/containers/containers.conf
+# Then follow Step 7 to create a fresh config
+```
 
-# Reset podman storage if corrupted
+### crun: unknown version specified
+
+**Cause:** Ubuntu's apt crun is too old.
+
+**Fix:** Build crun from source (Step 5).
+
+### Permission denied in rootless mode
+
+**Fix:**
+
+```bash
+# Add subuid/subgid mappings
+sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER
+
+# Reset storage if corrupted
 podman system reset
 ```
 
-### "go: command not found" during sudo make install
+### go: command not found during sudo make install
 
-Use the env wrapper:
+**Cause:** sudo doesn't inherit your PATH.
+
+**Fix:**
+
 ```bash
 sudo env "PATH=$PATH" make install PREFIX=/usr
 ```
 
 ### Missing btrfs/version.h
 
+**Fix:**
+
 ```bash
 sudo apt install -y libbtrfs-dev
 ```
 
-### go-md2man not found during conmon install
+### go-md2man not found
+
+**Fix:**
 
 ```bash
 sudo apt install -y go-md2man
+```
+
+### Container DNS not resolving
+
+**Fix:**
+
+```bash
+# Verify aardvark-dns exists
+ls -la /usr/lib/podman/aardvark-dns
+
+# Check network config
+podman network inspect podman | grep dns_enabled
+```
+
+### pasta not found (rootless networking fails)
+
+**Fix:**
+
+```bash
+sudo apt install -y passt
 ```
 
 ---
 
 ## Uninstallation
 
-If you need to revert to Ubuntu packages or clean up:
+To remove source-built components:
 
 ```bash
-# Remove source-built binaries
+# Remove binaries
 sudo rm -f /usr/bin/podman /usr/bin/podman-remote
 sudo rm -f /usr/bin/crun
 sudo rm -f /usr/local/bin/conmon
@@ -420,10 +477,10 @@ sudo rm -rf /usr/share/man/man1/podman*
 sudo rm -rf /usr/lib/systemd/system/podman*
 sudo rm -rf /usr/lib/systemd/user/podman*
 
-# Remove configurations (optional - keeps your settings)
+# Remove configs (optional)
 # sudo rm -rf /etc/containers
 
-# Remove user data (optional - destroys all containers/images)
+# Remove user data (WARNING: destroys all containers/images)
 # podman system reset --force
 # rm -rf ~/.local/share/containers
 # rm -rf ~/.config/containers
@@ -434,74 +491,104 @@ sudo apt install podman
 
 ---
 
-## Quick Reference: Automated Installation Script
-
-An automated installation script `install-podman-latest.sh` is provided that performs all steps in this guide.
+## Automated Installation Script
 
 ### Usage
 
 ```bash
-# Download or create the script, then:
 chmod +x install-podman-latest.sh
 ./install-podman-latest.sh
 ```
 
-### Script Options
+### Options
 
 | Option | Description |
 |--------|-------------|
-| `--force` | Reinstall even if Podman is already installed |
-| `--skip-cleanup` | Keep build directories for debugging |
-| `--help` | Show help message |
+| `--force` | Reinstall even if Podman exists |
+| `--skip-cleanup` | Keep build directories |
+| `--debug` | Verbose output |
+| `--help` | Show help |
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GO_VERSION` | 1.25.6 | Go version to install |
-| `BUILD_DIR` | ./podman-build | Directory for build files |
+| `GO_VERSION` | 1.25.6 | Go version |
+| `BUILD_DIR` | ./podman-build | Build directory |
+
+### What the Script Does
+
+1. **Pre-flight checks**: Ubuntu version, architecture, sudo, disk space, internet
+2. **Remove conflicts**: Removes apt packages we're building from source
+3. **Install dependencies**: All build and runtime deps including netavark, aardvark-dns
+4. **Install Go 1.25.6**: From official tarball
+5. **Build conmon**: Container monitor
+6. **Build crun**: OCI runtime
+7. **Build Podman**: With selinux, seccomp, systemd support
+8. **Configure**: registries.conf, policy.json, containers.conf, subuid/subgid
+9. **Validate**: Component versions, configuration, network backend
+10. **Test**: Runs actual containers to verify everything works
 
 ### Examples
 
 ```bash
-# Standard installation
+# Standard install
 ./install-podman-latest.sh
 
-# Force reinstall
-./install-podman-latest.sh --force
+# Force reinstall with debug
+./install-podman-latest.sh --force --debug
 
-# Use different Go version
+# Different Go version
 GO_VERSION=1.25.7 ./install-podman-latest.sh
 
-# Keep build files for inspection
+# Keep build files
 ./install-podman-latest.sh --skip-cleanup
 ```
 
 ---
 
-## Version History
+## Quick Fix for Existing Systems
 
-| Component | Ubuntu 24.04 APT | This Guide |
-|-----------|------------------|------------|
-| Go | 1.22.x | **1.25.6** |
-| Podman | 4.9.3 | **latest (main)** |
-| crun | 1.14.x | **latest (main)** |
-| conmon | varies | **latest (main)** |
+If you already have Podman installed but networking isn't working:
+
+```bash
+# Install missing network components
+sudo apt install -y netavark aardvark-dns containernetworking-plugins
+
+# Create/overwrite user config (don't append!)
+mkdir -p ~/.config/containers
+cat > ~/.config/containers/containers.conf << 'EOF'
+[containers]
+tz = "local"
+
+[engine]
+runtime = "crun"
+helper_binaries_dir = ["/usr/lib/podman", "/usr/libexec/podman", "/usr/local/lib/podman"]
+
+[network]
+network_backend = "netavark"
+default_rootless_network_cmd = "pasta"
+EOF
+
+# Verify
+podman info | grep -E "(networkBackend|ociRuntime)"
+podman run --rm alpine echo "Success!"
+```
 
 ---
 
 ## References
 
 - [Go Downloads](https://go.dev/dl/)
-- [Go Release History](https://go.dev/doc/devel/release) - Go 1.25.6 released 2026-01-15
-- [Podman Installation Docs](https://podman.io/docs/installation)
+- [Go 1.25.6 Release Notes](https://go.dev/doc/devel/release) (2026-01-15)
+- [Podman Documentation](https://docs.podman.io/)
 - [Podman GitHub](https://github.com/containers/podman)
 - [crun GitHub](https://github.com/containers/crun)
 - [conmon GitHub](https://github.com/containers/conmon)
+- [netavark GitHub](https://github.com/containers/netavark)
 
 ---
 
-*Guide created: February 2026*  
-*Tested on: Ubuntu 24.04.1 LTS*  
-*Go version: 1.25.6 (released 2026-01-15)*  
-*Podman version: 6.x (main branch)*
+*Version: 2.1.0*  
+*Updated: February 2026*  
+*Tested: Ubuntu 24.04.1 LTS*
