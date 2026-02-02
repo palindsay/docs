@@ -101,10 +101,12 @@ sudo apt install -y \
 
 ## Step 3: Install Modern Go
 
-Ubuntu 24.04's Go is too old. Install from the official tarball:
+Ubuntu 24.04's Go is too old. Install Go 1.25.6 (latest stable as of February 2026) from the official tarball.
+
+**Go 1.25.6** was released on January 15, 2026 and includes security fixes to the go command, archive/zip, crypto/tls, and net/url packages.
 
 ```bash
-GO_VERSION="1.23.5"  # Check https://go.dev/dl/ for latest stable
+GO_VERSION="1.25.6"  # Latest stable as of Feb 1, 2026
 
 # Download
 cd /tmp
@@ -147,7 +149,7 @@ sudo ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 ### Verify Go installation
 
 ```bash
-go version  # Should show go1.23.5 or newer
+go version  # Should show go1.25.6
 ```
 
 ---
@@ -432,134 +434,74 @@ sudo apt install podman
 
 ---
 
-## Quick Reference: All-in-One Script
+## Quick Reference: Automated Installation Script
 
-Save as `install-podman-latest.sh`:
+An automated installation script `install-podman-latest.sh` is provided that performs all steps in this guide.
 
-```bash
-#!/bin/bash
-set -euo pipefail
-
-echo "=== Podman from Source Installer for Ubuntu 24.04 ==="
-
-# Variables
-GO_VERSION="1.23.5"
-BUILD_DIR="$HOME/prjs/containers"
-
-# Remove conflicting packages
-echo "[1/8] Removing conflicting apt packages..."
-sudo apt remove -y podman crun conmon buildah skopeo 2>/dev/null || true
-sudo apt autoremove -y
-
-# Install dependencies
-echo "[2/8] Installing build dependencies..."
-sudo apt update
-sudo apt install -y \
-    make gcc pkg-config git curl wget \
-    btrfs-progs libbtrfs-dev libseccomp-dev libassuan-dev \
-    libgpgme-dev libdevmapper-dev libglib2.0-dev libostree-dev \
-    libprotobuf-dev libprotobuf-c-dev libsystemd-dev \
-    uidmap go-md2man \
-    autoconf automake libtool libcap-dev libyajl-dev python3 \
-    passt fuse-overlayfs slirp4netns iptables
-
-# Install Go
-echo "[3/8] Installing Go ${GO_VERSION}..."
-cd /tmp
-wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
-sudo rm -rf /usr/local/go
-sudo tar -C /usr/local -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
-rm "go${GO_VERSION}.linux-amd64.tar.gz"
-sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
-sudo ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
-export PATH=/usr/local/go/bin:$HOME/go/bin:$PATH
-
-# Setup build directory
-mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
-
-# Build conmon
-echo "[4/8] Building conmon..."
-git clone --depth 1 https://github.com/containers/conmon.git
-cd conmon
-make
-sudo make install
-cd ..
-
-# Build crun
-echo "[5/8] Building crun..."
-git clone --depth 1 https://github.com/containers/crun.git
-cd crun
-./autogen.sh
-./configure --prefix=/usr
-make
-sudo make install
-cd ..
-
-# Build podman
-echo "[6/8] Building podman..."
-git clone --depth 1 https://github.com/containers/podman.git
-cd podman
-make BUILDTAGS="selinux seccomp systemd"
-sudo env "PATH=$PATH" make install PREFIX=/usr
-cd ..
-
-# Configure
-echo "[7/8] Configuring podman..."
-sudo mkdir -p /etc/containers
-sudo curl -sL -o /etc/containers/registries.conf \
-    https://raw.githubusercontent.com/containers/image/main/registries.conf
-sudo curl -sL -o /etc/containers/policy.json \
-    https://raw.githubusercontent.com/containers/image/main/default-policy.json
-
-# Ensure subuid/subgid
-if ! grep -q "^$USER:" /etc/subuid 2>/dev/null; then
-    sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER
-fi
-
-# Verify
-echo "[8/8] Verifying installation..."
-echo ""
-echo "=== Installation Complete ==="
-echo "Go:     $(go version)"
-echo "crun:   $(crun --version | head -1)"
-echo "conmon: $(conmon --version)"
-echo "podman: $(podman --version)"
-echo ""
-echo "Test with: podman run --rm alpine echo 'Hello from Podman!'"
-
-# Add Go to bashrc if not present
-if ! grep -q '/usr/local/go/bin' ~/.bashrc; then
-    cat >> ~/.bashrc << 'EOF'
-
-# Go configuration (added by podman installer)
-export PATH=/usr/local/go/bin:$PATH
-export GOPATH=$HOME/go
-export PATH=$GOPATH/bin:$PATH
-EOF
-    echo "Note: Go PATH added to ~/.bashrc - run 'source ~/.bashrc' or start new shell"
-fi
-```
-
-Make executable and run:
+### Usage
 
 ```bash
+# Download or create the script, then:
 chmod +x install-podman-latest.sh
 ./install-podman-latest.sh
 ```
+
+### Script Options
+
+| Option | Description |
+|--------|-------------|
+| `--force` | Reinstall even if Podman is already installed |
+| `--skip-cleanup` | Keep build directories for debugging |
+| `--help` | Show help message |
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GO_VERSION` | 1.25.6 | Go version to install |
+| `BUILD_DIR` | ./podman-build | Directory for build files |
+
+### Examples
+
+```bash
+# Standard installation
+./install-podman-latest.sh
+
+# Force reinstall
+./install-podman-latest.sh --force
+
+# Use different Go version
+GO_VERSION=1.25.7 ./install-podman-latest.sh
+
+# Keep build files for inspection
+./install-podman-latest.sh --skip-cleanup
+```
+
+---
+
+## Version History
+
+| Component | Ubuntu 24.04 APT | This Guide |
+|-----------|------------------|------------|
+| Go | 1.22.x | **1.25.6** |
+| Podman | 4.9.3 | **latest (main)** |
+| crun | 1.14.x | **latest (main)** |
+| conmon | varies | **latest (main)** |
 
 ---
 
 ## References
 
+- [Go Downloads](https://go.dev/dl/)
+- [Go Release History](https://go.dev/doc/devel/release) - Go 1.25.6 released 2026-01-15
 - [Podman Installation Docs](https://podman.io/docs/installation)
 - [Podman GitHub](https://github.com/containers/podman)
 - [crun GitHub](https://github.com/containers/crun)
 - [conmon GitHub](https://github.com/containers/conmon)
-- [Go Downloads](https://go.dev/dl/)
 
 ---
 
-*Guide created: February 2026*
-*Tested on: Ubuntu 24.04.1 LTS*
+*Guide created: February 2026*  
+*Tested on: Ubuntu 24.04.1 LTS*  
+*Go version: 1.25.6 (released 2026-01-15)*  
 *Podman version: 6.x (main branch)*
