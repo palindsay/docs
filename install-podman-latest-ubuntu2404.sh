@@ -191,25 +191,51 @@ run_sudo() {
 
 check_ubuntu_version() {
     log_debug "Checking Ubuntu version..."
-    
+
     if [[ ! -f /etc/os-release ]]; then
         die "Cannot determine OS version. /etc/os-release not found."
     fi
-    
+
     # shellcheck source=/dev/null
     source /etc/os-release
-    
-    if [[ "${ID:-}" != "ubuntu" ]]; then
-        die "This script is designed for Ubuntu. Detected: ${ID:-unknown}"
+
+    local is_ubuntu_based=false
+    local detected_version=""
+    local distro_name="${PRETTY_NAME:-${ID:-unknown}}"
+
+    # Direct Ubuntu
+    if [[ "${ID:-}" == "ubuntu" ]]; then
+        is_ubuntu_based=true
+        detected_version="${VERSION_ID:-}"
+    # Ubuntu derivatives (Pop!_OS, Linux Mint, Elementary, etc.)
+    elif [[ "${ID_LIKE:-}" =~ ubuntu ]]; then
+        is_ubuntu_based=true
+        log_info "Detected Ubuntu-based distribution: ${distro_name}"
+        # Use UBUNTU_CODENAME to determine base version
+        if [[ -n "${UBUNTU_CODENAME:-}" ]]; then
+            case "${UBUNTU_CODENAME}" in
+                noble)   detected_version="24.04" ;;
+                jammy)   detected_version="22.04" ;;
+                focal)   detected_version="20.04" ;;
+                *)       detected_version="${VERSION_ID:-unknown}" ;;
+            esac
+            log_debug "Ubuntu codename '${UBUNTU_CODENAME}' maps to version ${detected_version}"
+        else
+            detected_version="${VERSION_ID:-unknown}"
+        fi
     fi
-    
-    if [[ "${VERSION_ID:-}" != "24.04" ]]; then
-        log_warn "This script is tested on Ubuntu 24.04. Detected: ${VERSION_ID:-unknown}"
+
+    if [[ "$is_ubuntu_based" != "true" ]]; then
+        die "This script requires Ubuntu or an Ubuntu-based distribution. Detected: ${ID:-unknown}"
+    fi
+
+    if [[ "$detected_version" != "24.04" ]]; then
+        log_warn "This script is tested on Ubuntu 24.04. Detected base version: ${detected_version}"
         log_warn "Continuing anyway, but issues may occur..."
         sleep 3
     fi
-    
-    log_debug "Ubuntu version check passed: ${VERSION_ID:-unknown}"
+
+    log_debug "Ubuntu version check passed: ${detected_version} (${distro_name})"
 }
 
 check_architecture() {
@@ -468,6 +494,13 @@ install_build_dependencies() {
         fuse-overlayfs
         iptables
         libsubid4
+
+        # Podman machine support (QEMU/VM backend)
+        qemu-system-x86
+        qemu-utils
+        ovmf
+        gvproxy
+        virtiofsd
     )
     
     log_info "Installing ${#packages[@]} packages..."
@@ -501,7 +534,22 @@ install_build_dependencies() {
     if [[ ${#missing[@]} -gt 0 ]]; then
         die "Critical runtime dependencies missing: ${missing[*]}"
     fi
-    
+
+    # Set up gvproxy symlinks for podman machine support
+    # Ubuntu installs gvproxy to /usr/bin but podman looks in helper_binaries_dir
+    log_info "Setting up podman machine helper symlinks..."
+    run_sudo "Create /usr/lib/podman" mkdir -p /usr/lib/podman
+
+    if [[ -x /usr/bin/gvproxy ]] && [[ ! -e /usr/lib/podman/gvproxy ]]; then
+        run_sudo "Symlink gvproxy" ln -s /usr/bin/gvproxy /usr/lib/podman/gvproxy
+        log_debug "Created symlink: /usr/lib/podman/gvproxy -> /usr/bin/gvproxy"
+    fi
+
+    if [[ -x /usr/bin/qemu-wrapper ]] && [[ ! -e /usr/lib/podman/qemu-wrapper ]]; then
+        run_sudo "Symlink qemu-wrapper" ln -s /usr/bin/qemu-wrapper /usr/lib/podman/qemu-wrapper
+        log_debug "Created symlink: /usr/lib/podman/qemu-wrapper -> /usr/bin/qemu-wrapper"
+    fi
+
     log_success "All dependencies installed"
 }
 
@@ -774,12 +822,13 @@ default_ulimits = [
 # Use crun as OCI runtime (faster than runc)
 runtime = "crun"
 
-# Locations for helper binaries (netavark, aardvark-dns, etc.)
+# Locations for helper binaries (netavark, aardvark-dns, gvproxy, etc.)
 helper_binaries_dir = [
   "/usr/lib/podman",
   "/usr/libexec/podman",
   "/usr/local/lib/podman",
-  "/usr/local/libexec/podman"
+  "/usr/local/libexec/podman",
+  "/usr/bin"
 ]
 
 # Use SQLite database backend
@@ -797,6 +846,13 @@ default_rootless_network_cmd = "pasta"
 
 # Enable iptables firewall driver
 firewall_driver = "iptables"
+
+[machine]
+# Podman machine (VM) settings
+# Uncomment and adjust as needed:
+# cpus = 2
+# memory = 2048
+# disk_size = 100
 USERCONFEOF
     
     log_info "Config file: ${HOME}/.config/containers/containers.conf"
@@ -921,9 +977,57 @@ validate_installation() {
         echo -e "${YELLOW}NOT FOUND${NC}"
         ((warnings++)) || true
     fi
-    
+
     echo ""
-    
+    echo -e "${BOLD}Podman Machine Components:${NC}"
+    echo "=========================="
+
+    # Check QEMU
+    printf "  %-14s" "QEMU:"
+    if command_exists qemu-system-x86_64; then
+        local qemu_ver
+        qemu_ver=$(qemu-system-x86_64 --version 2>&1 | head -1 | grep -oP 'version \K[0-9.]+' || echo "installed")
+        echo -e "${GREEN}${qemu_ver}${NC}"
+    else
+        echo -e "${YELLOW}NOT FOUND (podman machine won't work)${NC}"
+        ((warnings++)) || true
+    fi
+
+    # Check gvproxy
+    printf "  %-14s" "gvproxy:"
+    local gvproxy_found=false
+    for path in /usr/lib/podman/gvproxy /usr/libexec/podman/gvproxy /usr/bin/gvproxy; do
+        if [[ -x "$path" ]]; then
+            gvproxy_found=true
+            echo -e "${GREEN}found at ${path}${NC}"
+            break
+        fi
+    done
+    if [[ "$gvproxy_found" != "true" ]]; then
+        echo -e "${YELLOW}NOT FOUND (podman machine won't work)${NC}"
+        ((warnings++)) || true
+    fi
+
+    # Check OVMF (UEFI firmware)
+    printf "  %-14s" "OVMF:"
+    if [[ -f /usr/share/OVMF/OVMF_CODE.fd ]]; then
+        echo -e "${GREEN}present${NC}"
+    else
+        echo -e "${YELLOW}NOT FOUND (podman machine won't work)${NC}"
+        ((warnings++)) || true
+    fi
+
+    # Check virtiofsd
+    printf "  %-14s" "virtiofsd:"
+    if command_exists virtiofsd; then
+        echo -e "${GREEN}present${NC}"
+    else
+        echo -e "${YELLOW}NOT FOUND (shared folders won't work)${NC}"
+        ((warnings++)) || true
+    fi
+
+    echo ""
+
     if [[ $errors -gt 0 ]]; then
         die "Validation failed: $errors critical component(s) missing"
     fi

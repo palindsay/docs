@@ -25,8 +25,9 @@ For manual installation, follow the detailed steps below.
 8. [Step 6: Build Podman](#step-6-build-podman)
 9. [Step 7: Configure Podman](#step-7-configure-podman)
 10. [Step 8: Validate Installation](#step-8-validate-installation)
-11. [Troubleshooting](#troubleshooting)
-12. [Uninstallation](#uninstallation)
+11. [Step 9: Podman Machine Setup (Optional)](#step-9-podman-machine-setup-optional)
+12. [Troubleshooting](#troubleshooting)
+13. [Uninstallation](#uninstallation)
 
 ---
 
@@ -51,10 +52,11 @@ Ubuntu 24.04's package versions are too old for Podman 5.x+:
 
 ## Prerequisites
 
-- Ubuntu 24.04 LTS (server or desktop)
+- Ubuntu 24.04 LTS or Ubuntu 24.04-based distribution (Pop!_OS, Linux Mint, etc.)
 - sudo privileges
 - ~2GB free disk space
 - Internet connectivity
+- For podman machine: KVM-capable hardware (verify with `kvm-ok`)
 
 ---
 
@@ -130,6 +132,52 @@ ls -la /usr/lib/podman/aardvark-dns
 
 # pasta (rootless networking)
 which pasta
+```
+
+### Podman machine dependencies (optional)
+
+Required for `podman machine init` and `podman machine start` (VM-based containers):
+
+```bash
+sudo apt install -y \
+    qemu-system-x86 \
+    qemu-utils \
+    ovmf \
+    gvproxy \
+    virtiofsd
+```
+
+These packages enable:
+- **qemu-system-x86**: QEMU hypervisor for x86_64 VMs
+- **qemu-utils**: Disk image management (qemu-img)
+- **ovmf**: UEFI firmware for VMs
+- **gvproxy**: VM networking bridge (gvisor-tap-vsock)
+- **virtiofsd**: Shared filesystem support between host and VM
+
+#### Create gvproxy symlinks
+
+Ubuntu installs gvproxy to `/usr/bin/`, but Podman expects it in helper directories:
+
+```bash
+sudo mkdir -p /usr/lib/podman
+sudo ln -s /usr/bin/gvproxy /usr/lib/podman/gvproxy
+sudo ln -s /usr/bin/qemu-wrapper /usr/lib/podman/qemu-wrapper
+```
+
+#### Verify podman machine components
+
+```bash
+# QEMU
+qemu-system-x86_64 --version
+
+# gvproxy
+ls -la /usr/lib/podman/gvproxy
+
+# UEFI firmware
+ls -la /usr/share/OVMF/OVMF_CODE.fd
+
+# virtiofsd
+which virtiofsd
 ```
 
 ---
@@ -277,7 +325,8 @@ helper_binaries_dir = [
   "/usr/lib/podman",
   "/usr/libexec/podman",
   "/usr/local/lib/podman",
-  "/usr/local/libexec/podman"
+  "/usr/local/libexec/podman",
+  "/usr/bin"
 ]
 database_backend = "sqlite"
 events_logger = "journald"
@@ -286,6 +335,12 @@ events_logger = "journald"
 network_backend = "netavark"
 default_rootless_network_cmd = "pasta"
 firewall_driver = "iptables"
+
+[machine]
+# Podman machine (VM) settings - uncomment and adjust as needed:
+# cpus = 2
+# memory = 2048
+# disk_size = 100
 EOF
 ```
 
@@ -362,6 +417,77 @@ podman run --rm --pod testpod alpine wget -qO- http://localhost:8080
 
 # Cleanup
 podman pod rm -f testpod
+```
+
+---
+
+## Step 9: Podman Machine Setup (Optional)
+
+Podman machine provides VM-based container execution, similar to Docker Desktop. This is useful for:
+- Running containers in an isolated VM environment
+- Cross-platform development workflows
+- Testing in a clean environment
+
+### Verify machine support
+
+```bash
+echo "=== Podman Machine Components ==="
+qemu-system-x86_64 --version | head -1
+ls -la /usr/lib/podman/gvproxy
+ls -la /usr/share/OVMF/OVMF_CODE.fd
+which virtiofsd
+```
+
+### Initialize a machine
+
+```bash
+# Create a new machine with defaults
+podman machine init
+
+# Or customize resources
+podman machine init --cpus 4 --memory 4096 --disk-size 50
+```
+
+### Start the machine
+
+```bash
+podman machine start
+```
+
+### Verify machine is running
+
+```bash
+podman machine list
+
+# Expected output:
+# NAME                     VM TYPE     CREATED        LAST UP            CPUS        MEMORY      DISK SIZE
+# podman-machine-default*  qemu        1 minute ago   Currently running  2           2GiB        100GiB
+```
+
+### Run containers in the machine
+
+```bash
+# Run a container
+podman run --rm alpine echo "Hello from Podman Machine!"
+
+# Interactive shell
+podman run -it --rm alpine sh
+```
+
+### Machine management commands
+
+```bash
+# Stop machine
+podman machine stop
+
+# SSH into machine
+podman machine ssh
+
+# Remove machine
+podman machine rm
+
+# Reset to defaults (removes all machines)
+podman machine reset
 ```
 
 ---
@@ -461,6 +587,69 @@ podman network inspect podman | grep dns_enabled
 sudo apt install -y passt
 ```
 
+### Error: could not find "gvproxy"
+
+**Cause:** gvproxy binary not in Podman's helper_binaries_dir.
+
+**Fix:**
+
+```bash
+# Option 1: Create symlink (recommended)
+sudo mkdir -p /usr/lib/podman
+sudo ln -s /usr/bin/gvproxy /usr/lib/podman/gvproxy
+
+# Option 2: Verify /usr/bin is in helper_binaries_dir in containers.conf
+grep helper_binaries_dir ~/.config/containers/containers.conf
+```
+
+### podman machine init fails with QEMU error
+
+**Cause:** QEMU or OVMF firmware not installed.
+
+**Fix:**
+
+```bash
+sudo apt install -y qemu-system-x86 ovmf qemu-utils
+```
+
+### podman machine start: permission denied on /dev/kvm
+
+**Cause:** User not in kvm group.
+
+**Fix:**
+
+```bash
+sudo usermod -aG kvm $USER
+# Log out and back in, or use:
+newgrp kvm
+```
+
+### Machine networking fails (no internet in VM)
+
+**Cause:** gvproxy not working correctly.
+
+**Fix:**
+
+```bash
+# Verify gvproxy is accessible
+ls -la /usr/lib/podman/gvproxy
+
+# Check if gvproxy process is running
+ps aux | grep gvproxy
+
+# Restart machine
+podman machine stop
+podman machine start
+```
+
+### virtiofsd not found (shared volumes don't work)
+
+**Fix:**
+
+```bash
+sudo apt install -y virtiofsd
+```
+
 ---
 
 ## Uninstallation
@@ -518,15 +707,15 @@ chmod +x install-podman-latest.sh
 
 ### What the Script Does
 
-1. **Pre-flight checks**: Ubuntu version, architecture, sudo, disk space, internet
+1. **Pre-flight checks**: Ubuntu/derivative version, architecture, sudo, disk space, internet
 2. **Remove conflicts**: Removes apt packages we're building from source
-3. **Install dependencies**: All build and runtime deps including netavark, aardvark-dns
+3. **Install dependencies**: All build and runtime deps including netavark, aardvark-dns, QEMU, gvproxy
 4. **Install Go 1.25.6**: From official tarball
 5. **Build conmon**: Container monitor
 6. **Build crun**: OCI runtime
 7. **Build Podman**: With selinux, seccomp, systemd support
 8. **Configure**: registries.conf, policy.json, containers.conf, subuid/subgid
-9. **Validate**: Component versions, configuration, network backend
+9. **Validate**: Component versions, configuration, network backend, machine components
 10. **Test**: Runs actual containers to verify everything works
 
 ### Examples
@@ -555,6 +744,11 @@ If you already have Podman installed but networking isn't working:
 # Install missing network components
 sudo apt install -y netavark aardvark-dns containernetworking-plugins
 
+# For podman machine support (optional)
+sudo apt install -y qemu-system-x86 qemu-utils ovmf gvproxy virtiofsd
+sudo mkdir -p /usr/lib/podman
+sudo ln -sf /usr/bin/gvproxy /usr/lib/podman/gvproxy
+
 # Create/overwrite user config (don't append!)
 mkdir -p ~/.config/containers
 cat > ~/.config/containers/containers.conf << 'EOF'
@@ -563,7 +757,7 @@ tz = "local"
 
 [engine]
 runtime = "crun"
-helper_binaries_dir = ["/usr/lib/podman", "/usr/libexec/podman", "/usr/local/lib/podman"]
+helper_binaries_dir = ["/usr/lib/podman", "/usr/libexec/podman", "/usr/local/lib/podman", "/usr/bin"]
 
 [network]
 network_backend = "netavark"
@@ -589,6 +783,6 @@ podman run --rm alpine echo "Success!"
 
 ---
 
-*Version: 2.1.0*  
-*Updated: February 2026*  
-*Tested: Ubuntu 24.04.1 LTS*
+*Version: 2.2.0*
+*Updated: February 2026*
+*Tested: Ubuntu 24.04.1 LTS, Pop!_OS 24.04*
