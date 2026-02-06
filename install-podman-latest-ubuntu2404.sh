@@ -828,7 +828,8 @@ helper_binaries_dir = [
   "/usr/libexec/podman",
   "/usr/local/lib/podman",
   "/usr/local/libexec/podman",
-  "/usr/bin"
+  "/usr/bin",
+  "/usr/libexec"
 ]
 
 # Use SQLite database backend
